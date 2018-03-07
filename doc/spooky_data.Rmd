@@ -1,0 +1,472 @@
+---
+title: "SPOOKY Data Analysis"
+author: "Joo Kim"
+date: "February 5, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## 1. Introduction 
+
+Edgar Allan Poe, Mary Wollstonecraft Shelley, and H.P. Lovecraft are famous for their tales of mystery and horror. Below is my investigation of their texts using various text mining approaches, including sentiment analysis and character exploration. 
+
+### Data Input
+***
+Below are the packages I've used to conduct my analysis. 
+
+```{r, message = F, warning = F}
+packages.used <- c("ggplot2", "dplyr", "tibble", "tidyr",  "stringr", "tidytext",
+                   "wordcloud", "ggridges", "tidyr", "openNLP", "NLP", "reshape2")
+
+# check packages that need to be installed.
+packages.needed <- setdiff(packages.used, intersect(installed.packages()[,1], packages.used))
+
+# install additional packages
+if(length(packages.needed) > 0) {
+  install.packages(packages.needed, dependencies = TRUE, repos = 'http://cran.us.r-project.org')
+}
+
+library(ggplot2)
+library(dplyr)
+library(tidytext)
+library(wordcloud)
+library(stringr)
+library(ggridges)
+library(tidyr)
+library(openNLP)
+library(NLP)
+library(reshape2)
+
+source("../libs/multiplot.R")
+```
+
+
+An amalgam of Poe's, Shelley's, and Lovecraft's texts are contained in the below file named spooky. 
+
+```{r}
+spooky <- read.csv('../data/spooky.csv', as.is = TRUE)
+```
+
+
+## 2. Exploratory Data Analysis
+
+I begin by looking at the structure of the spooky text.
+
+```{r}
+str(spooky)
+```
+
+The spooky file is a data frame made of 19579 observations and 3 variables, composed of a unique ID, individul sentences, and the author initials. "EAP" stands for Edgar Allan Poe, "HPL" stands for H.P. Lovecraft, and "MWS" for Mary Wollstonecraft Shelley.
+
+It would be great to know how many of these sentences are attributable to each author. 
+
+```{r}
+sum(spooky$author == "EAP")
+sum(spooky$author == "HPL")
+sum(spooky$author == "MWS")
+```
+
+```{r}
+sent_count <- ggplot(spooky) +
+      geom_bar(aes(author, fill = author)) + 
+      theme(legend.position = "none") + 
+      labs(x = "Author", y = "Sentence count in \"spooky\"", 
+           title = "Number of sentences per author in \"spooky\"") 
+ggsave("sent_count.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs", scale = .6)
+sent_count
+```
+
+There are 7900 sentences attributable to Poe, 5635 sentences to Lovecraft, and 6044 to Shelley. Before starting the analysis process, one final step is to ensure there are no missing values and to change the author name from a character variable to a factor variable, for ease of analysis. 
+
+```{r}
+sum(is.na(spooky))
+spooky$author <- as.factor(spooky$author)
+```
+
+### Preparing the Data
+***
+I will be employing the unnest_tokens() function to break up sentences into words, remove punctuations, and transform all words into lower case. I am also removing stop words such as "and" and "of" that are not pertinent to my initial investigation. 
+
+```{r}
+spooky_wrd <- spooky %>% unnest_tokens(word, text) %>% 
+  anti_join(stop_words, by = "word")
+nrow(spooky_wrd)
+```
+
+I am left with 197707 words, including duplicates. Next, I'd like to calculate the number of words most frequently used by each author, to help guide the direction for my analysis. 
+
+### Word Frequency
+***
+I start with Poe and arrange his 30 most frequently used words into a wordcloud. 
+
+```{r}
+EAP_wordcloud <- spooky_wrd %>% filter(author == "EAP") %>% count(word) %>%
+  with(wordcloud(word, n, max.words = 30, color = "red"))
+```
+
+Edgar Allen Poe's most frequently used words interestingly include several body parts like "hand", "body", "feet", and "eyes". He may be using these to depict bodily movements in acute detail or it may be something else.... Next, I look at Shelley's 30 most common words in the spooky text.  
+
+```{r}
+MWS_wordcloud <- spooky_wrd %>% filter(author == "MWS") %>% count(word) %>%
+  with(wordcloud(word, n, max.words = 30, color = "blue"))
+```
+
+Words that arouse sentimental emotions like "heart", "love", "soul", and "love" are prevalent in Mary Shelley's text. In addition, character names such as "raymond", "perdita", and "idris", are among the top 30 words. This potentially conveys a character-driven novel with significant character development and relationships. 
+
+Finally, what words did Lovecraft commonly use?
+
+```{r}
+HPL_wordcloud <- spooky_wrd %>% filter(author == "HPL") %>% count(word) %>%
+  with(wordcloud(word, n, max.words = 25, color = "green"))
+```
+
+Contrary to Shelley's, Lovecraft's terms describe or induce negative states of mind like "horror", "fear", "strange", and "terrible". 
+
+The three distinct patterns that surfaced from the word frequency analysis motivate me to conduct sentiment analysis, in order to find out if these themes indeed map back to the entire narrative. 
+
+
+## 3. Sentiment Analysis with Words 
+
+I look beyond the mere frequency of terms to analyze sentiment associated with each author's text. Out of the three sentiment lexicons (nrc, bing, and AFINN), I will be using AFINN. AFINN assigns words with a score between -5 and 5, with -5 at the negative end of the spectrum and 5 at the positive end. 
+
+I will begin by following up on my findings on Lovecraft - his proclivity for creating negative, eerie moods. Based on the results from the word frequency analysis, I expect Lovecraft to have a lower AFINN score than Poe or Shelley. 
+
+```{r}
+get_sentiments("afinn")
+```
+
+```{r}
+HPL_afinnscore <- spooky_wrd %>% filter(author == "HPL") %>% 
+  inner_join(get_sentiments("afinn"), by = "word")
+HPL_score <- sum(HPL_afinnscore$score)
+HPL_score
+```
+
+Lovecraft's score is -4103. To gauge its significance, let's compute the scores of others and compare with a bar graph. 
+
+```{r}
+EAP_afinnscore <- spooky_wrd %>% filter(author == "EAP") %>% 
+  inner_join(get_sentiments("afinn"), by = "word")
+EAP_score <- sum(EAP_afinnscore$score)
+EAP_score
+```
+
+```{r}
+MWS_afinnscore <- spooky_wrd %>% filter(author == "MWS") %>% 
+  inner_join(get_sentiments("afinn"), by = "word")
+MWS_score <- sum(MWS_afinnscore$score)
+MWS_score
+```
+
+```{r}
+afinnscore_all <- spooky_wrd %>% 
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  group_by(author) %>% 
+  summarise(sentiment = sum(score)) %>%
+  count(author, sentiment)
+
+afinngraph <- ggplot(afinnscore_all, aes(author, sentiment, fill = author)) +
+  geom_col(show.legend = F) + 
+  labs(y = "Sentiment Score", 
+       title = "Overall sentiment score")
+ggsave("net_sentimentscore.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+
+afinngraph
+```
+
+The overall afinn scores are as I initially predicted: Lovecraft has a significantly lower score than Poe and Shelley. These, however, are only net scores. It would be interesting to see the changes in sentiment and tone throughout the trajectory of each narrative.
+
+I divided the text into sections of 100 lines of text after testing out 1000 and 500 lines. Looking at sentiment per 100 lines of text presented the clearest and most transparent look at sentiment changes in each author's text. 
+
+```{r}
+afinnscore_trend <- spooky_wrd %>% 
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  group_by(author, index = row_number() %/% 100) %>% 
+  summarise(sentiment = sum(score)) %>%
+  count(index, author, sentiment)
+
+afinntrend <- ggplot(afinnscore_trend, aes(index, sentiment, fill = author)) +
+  geom_col(show.legend = F) + 
+  labs(x = "Per 100 lines of text", y = "Sentiment score", 
+       title = "Sentiment changes throughout narrative") + 
+  facet_wrap(~ author, ncol = 1, scales = "free_x")
+ggsave("sent_changes1.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+
+afinntrend
+```
+
+The above graph is a great way to see the changes in tone within each author's text as well as comparing the trends across authors. Even at first glance, one can detect major differences between the texts of Lovecrafts' (the second graph labeled HLP) and Poe's and Shelley's. Poe's and Shelley's text fluctuate between positivity and negativity, while Lovecraft's text maintains negativity throughout the entire trajectory of the story. Comparing Shelley's with Poe's, I see greater extremes from Shelley's, with several peaks around a score of 40 and many lows close to a score of -50, whereas Poe's narrative is more stable in terms of sentiment. 
+
+## 4. n-grams: Relationships between Words
+
+So far I've analyzed the spooky text at the word-level. Now, I'd like to conduct an analysis on pairs of words because a word-level analysis may have negated important relationships between words. Specifically, I'd like to understand how words preceded by negating words like "no", "not", and "don't" might potentially disconfirm the sentiment conclusion I made at the word-level.
+
+```{r}
+spooky_bigrams <- spooky %>% unnest_tokens(bigram, text, token = "ngrams", n = 2) 
+
+#split into word1 and word 2
+bigrams_sep <- spooky_bigrams %>% separate(bigram, c("word1", "word2"), sep = " ")
+
+#focus on the following negating words for a second look at my original sentiment analysis
+negation_words <- c("not", "no", "never", "can't", "don't")
+
+negated_words <- bigrams_sep %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>%
+  count(word1, word2, score, sort = TRUE) %>%
+  ungroup()
+
+negated_words
+```
+
+There are 286 bigrams that may have made erroneous contributions to the initial sentiment analysis. A graph would allow us to gauge which words have made the most significant inaccurate contributions. 
+
+```{r}
+top20_wrong <- negated_words %>%
+  mutate(contribution = n * score) %>%
+  arrange(desc(abs(contribution))) %>%
+  head(20) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(word2, n * score, fill = n * score > 0)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = "Words preceded \"not\", \"no\", \"never\", \"don't\", \"can't\"",
+      y = "Sentiment score * number of occurrences",
+      title = "Top 20 inaccurate contributor words and combined scores") +
+  coord_flip()
+ggsave("wrong_contribute.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+top20_wrong
+```
+
+The graph shows that words like "doubt" and "fail" may have erroneously lowered the sentiment scores of authors' texts. When paired with negating words, such words should have been tagged as positive in sentiment analysis. In order to update the score, I need to look at these word pairs for each author. I begin with Poe. 
+
+### Poe's Updated Sentiment Score
+***
+
+```{r}
+EAP_bigrams_sep <- bigrams_sep %>% filter(author == "EAP")
+EAP_negated_words <- EAP_bigrams_sep %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>%
+  count(word1, word2, score, sort = TRUE) %>%
+  ungroup()
+
+# multiply by -2 so I can reverse the erroneous contributions by simply adding this score to the original score 
+AddtoEAP <- sum(EAP_negated_words$score * EAP_negated_words$n) * -2 
+EAP_new <- EAP_score + AddtoEAP
+```
+
+I will create a comparison bar graph to illustrate the difference between the initial score and the updated score. 
+
+```{r}
+EAP_df <- data.frame(EAP_score, EAP_new)
+EAP_long <- melt(EAP_df) #use melt function to reshape the data for comparison bar graph
+EAP_diff <- ggplot(EAP_long, aes(variable, value, fill = variable)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "EAP before and after", y = "Overall afinn score", 
+       title = "Difference in Poe's afinn score")
+ggsave("EAP_befaft.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+EAP_diff
+```
+
+Poe's overall sentiment score is higher, from -1077 to -877, signaling greater overall positivity after taking into account the effect of negating words. 
+
+### Shelley's Updated Sentiment Score
+***
+
+```{r}
+MWS_bigrams_sep <- bigrams_sep %>% filter(author == "MWS")
+MWS_negated_words <- MWS_bigrams_sep %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>%
+  count(word1, word2, score, sort = TRUE) %>%
+  ungroup()
+
+# multiply by -2 so you can reverse the erroneous contributions by simply adding this score to the original score 
+AddtoMWS <- sum(MWS_negated_words$score * MWS_negated_words$n) * -2
+MWS_new <- MWS_score + AddtoMWS
+
+MWS_df <- data.frame(MWS_score, MWS_new)
+MWS_long <- melt(MWS_df) #use melt function to reshape the data for comparison bar graph
+MWS_diff <- ggplot(MWS_long, aes(variable, value, fill = variable)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "MWS before and after", y = "Overall afinn score",
+       title = "Difference in Shelley's afinn score")
+ggsave("MWS_befaft.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+MWS_diff
+```
+
+Shelley's's overall sentiment score is also higher after the update, changing from -560 to -376, indicating greater overall positivity. Finally, let's look at Lovecraft. 
+
+### Lovecraft's Updated Sentiment Score
+***
+
+```{r}
+HPL_bigrams_sep <- bigrams_sep %>% filter(author == "HPL")
+HPL_negated_words <- HPL_bigrams_sep %>%
+  filter(word1 %in% negation_words) %>%
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>%
+  count(word1, word2, score, sort = TRUE) %>%
+  ungroup()
+
+# multiply by -2 so you can reverse the erroneous contributions by simply adding this score to the original score 
+AddtoHPL <- sum(HPL_negated_words$score * HPL_negated_words$n) * -2
+HPL_new <- HPL_score + AddtoHPL
+
+HPL_df <- data.frame(HPL_score, HPL_new)
+HPL_long <- melt(HPL_df) #use melt function to reshape the data for comparison bar graph
+HPL_diff <- ggplot(HPL_long, aes(variable, value, fill = variable)) + 
+  geom_bar(stat = "identity", position = "dodge", width = .7) +
+  labs(x = "HPL before and after", y = "Overall afinn score",
+       title = "Difference in Lovecraft's afinn score")
+ggsave("HPLbefaft.png", 
+       path = "/Users/jookim/Documents/GitHub/spring2018-project1-jk4088/figs")
+
+HPL_diff
+```
+
+In contrast to the other two authors, Lovecraft's sentiment score slightly decreased after the update from -4103 to -4179, becoming more negative. 
+
+In conclusion, conducting an n-gram analysis can shed light on information that a word-level analysis may miss. In this case, the n-gram sentiment analysis made Lovecraft's score more negative, while making Poe's and Shelley's scores more positive. Lovecraft's text remains the most negative, surpassing Poe 'sby approximately 3300 points and Shelley by 3600 points. 
+
+## 5. Role of Gender in Spooky Text
+
+Finally, I am very interested in understanding how gender plays out in the spooky text. 
+
+I would like to start by comparing the number of female and male main characters within each narrative as well as across different authors. 
+
+I begin my analysis with Mary Shelley. I tokenized, then utilized the NLP and openNLP packages to isolate proper nouns, which will include character names. 
+
+### Shelley's Gender Ratio
+***
+
+```{r}
+spooky_wrd2 <- spooky %>% unnest_tokens(word, text, to_lower = FALSE) %>%
+  anti_join(stop_words, by = "word")
+
+MWS_text <- spooky_wrd2 %>% filter(author == "MWS")
+MWS_text <- MWS_text[, 3]
+MWS_text <- as.String(MWS_text)
+
+wordAnnotation <- annotate(MWS_text, list(Maxent_Sent_Token_Annotator(),
+                                          Maxent_Word_Token_Annotator()))
+POSAnnotation <- annotate(MWS_text, Maxent_POS_Tag_Annotator(), wordAnnotation)
+POSwords <- subset(POSAnnotation, type == "word")
+tags <- sapply(POSwords$features, '[[', "POS")
+
+MWS_tokenized_tagged <- data.frame(Tokens = MWS_text[POSwords], Tags = tags)
+MWS_NNP <- MWS_tokenized_tagged %>% filter(MWS_tokenized_tagged$Tags == "NNP")
+MWS_freq <- sort(table(MWS_NNP[ ,1]), decreasing = T)
+MWS_freq <- as.data.frame(MWS_freq)
+MWS_freq %>% filter(Freq >= 20)
+```
+
+As I suspected, the most frequently mentioned proper nouns are names of the characters in Shelley's novel. In order to isolate main characters, I designated as main or at least "significant" characters those who are mentioned more than 20 times in the novel. The list shows 3 male characters mentioned 20+ times in the book and 7 female characters mentioned 20+ times in Shelley's work - exciting! Now, I will compare the gender ratio to that of other two authors' texts. 
+
+### EAP's Gender Ratio
+***
+
+```{r}
+EAP_text <- spooky_wrd2 %>% filter(author == "EAP")
+EAP_text <- EAP_text[, 3]
+EAP_text <- as.String(EAP_text)
+
+wordAnnotation <- annotate(EAP_text, list(Maxent_Sent_Token_Annotator(),
+                                          Maxent_Word_Token_Annotator()))
+POSAnnotation <- annotate(EAP_text, Maxent_POS_Tag_Annotator(), wordAnnotation)
+POSwords <- subset(POSAnnotation, type == "word")
+tags <- sapply(POSwords$features, '[[', "POS")
+
+EAP_tokenized_tagged <- data.frame(Tokens = EAP_text[POSwords], Tags = tags)
+EAP_NNP <- EAP_tokenized_tagged %>% filter(EAP_tokenized_tagged$Tags == "NNP")
+EAP_freq <- sort(table(EAP_NNP[ ,1]), decreasing = T)
+EAP_freq <- as.data.frame((EAP_freq))
+EAP_freq %>% filter(Freq >= 20)
+```
+
+An interesting thing to note when looking at common proper nouns of Poe's text is that there are fewer character names than Mary Shelley's. "Mr", "Madame", and "Monsieur" are among the most used words, and the more prevalent character names betray the title of the text: Poe's short story "The Gold-Bug." At initial glance, I find only 1-2 distinctly female names on the list. 
+
+### HPL's Gender Ratio
+***
+
+```{r}
+HPL_text <- spooky_wrd2 %>% filter(author == "HPL")
+HPL_text <- HPL_text[, 3]
+HPL_text <- as.String(HPL_text)
+
+wordAnnotation <- annotate(HPL_text, list(Maxent_Sent_Token_Annotator(),
+                                          Maxent_Word_Token_Annotator()))
+POSAnnotation <- annotate(HPL_text, Maxent_POS_Tag_Annotator(), wordAnnotation)
+POSwords <- subset(POSAnnotation, type == "word")
+tags <- sapply(POSwords$features, '[[', "POS")
+
+HPL_tokenized_tagged <- data.frame(Tokens = HPL_text[POSwords], Tags = tags)
+HPL_NNP <- HPL_tokenized_tagged %>% filter(HPL_tokenized_tagged$Tags == "NNP")
+HPL_freq <- sort(table(HPL_NNP[ ,1]), decreasing = T)
+HPL_freq <- as.data.frame((HPL_freq))
+HPL_freq %>% filter(Freq >= 20)
+```
+
+As with Poe's, Lovecraft's text includes very few if any female characters. What's more, the character names are very unique and unfamiliar. I presume they have either been imitated from a bygone era or imagined by Lovecraft specifically for this collection of text. 
+
+### Further Exploration of Gender in Mary Shelley's Text
+***
+
+The above results inspire me to further explore the gender roles in Mary Shelley's text. Although there are more than twice as many "significant" female characters as their male counterparts, how compelling are these characters? How do they fit in the story and what personalities might they exhibit? 
+
+One way to do this is to analyze the words that follow the mention of each character. If they are verbs, are they action verbs or passive verbs? For the purpose of this analysis, I chose to dig deeper into the psycho profiles of one male character, Raymond, and one female character, Perdita. I start with Raymond. 
+
+```{r}
+Raymond_words <- MWS_bigrams_sep %>% 
+  filter(word1 == "raymond") %>% 
+  filter(!word2 %in% stop_words$word) %>%
+  count(word1, word2, sort = TRUE)
+print.data.frame(Raymond_words)
+```
+
+A mention of Raymond is followed by 51 words that are not stop-words. Looking at the table, you see most of them are action verbs, like "questioned", "steered", "interrupted", "exercised". I would like to compare these words with words followed by a mention of Perdita.
+
+```{r}
+Perdita_words <- MWS_bigrams_sep %>% 
+  filter(word1 == "perdita") %>% 
+  filter(!word2 %in% stop_words$word) %>%
+  count(word1, word2, sort = TRUE)
+print.data.frame(Perdita_words)
+```
+
+Although the small number of words make the analysis a bit challenging, I can see going through the list that Perdita is followed by a more balanced number of action verbs as well as more passive verbs, including words like "beheld", "looked", and "detailed". These initial results show that Perdita may exhibit a more subdued, passive personality than Raymond in Mary Shelley's text. 
+
+Finally, I calculated the afinn sentiment scores of words followed by each character's names to see if one character might convey a more positive or negative sentiment than the other. 
+
+```{r}
+afinnscore <- get_sentiments("afinn") 
+afinnscore$word2 <- afinnscore$word # add column with "word2" to inner_join with Raymond_words by "word2"
+
+Raymond_afinntable <- Raymond_words %>% 
+  inner_join(afinnscore, by = "word2")
+Raymond_afinnscore <- sum(Raymond_afinntable$score * Raymond_afinntable$n)
+Raymond_afinnscore
+
+Perdita_afinntable <- Perdita_words %>% 
+  inner_join(afinnscore, by = "word2")
+Perdita_afinnscore <- sum(Perdita_afinntable$score * Perdita_afinntable$n)
+Perdita_afinnscore
+```
+
+The scores are the same for both Raymond and Perdita, -5, showing no difference in sentiment between Raymond and Perdita. One must note that there are only 5 words from Raymond's words that were included in the afinn lexicon and only 6 from Perdita's. Therefore, further analysis would be necessary to make definitive conclusions about the psycho profiles of the two characters. 
+
+
+
+
+
+
+
+
+
+
